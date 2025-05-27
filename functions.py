@@ -59,7 +59,7 @@ def create_speech_task(api_key, group_id, model, text=None, voice_id="audiobook_
     """
     调用接口创建异步文本转语音任务，返回 task_id。
     """
-    url = f"https://api.minimaxi.chat/v1/t2a_async_v2?GroupId={group_id}"
+    url = f"https://api.minimax.chat/v1/t2a_async_v2?GroupId={group_id}"
     payload = {
         "model": model,
         "text": text,
@@ -100,12 +100,12 @@ def get_task_status(api_key, group_id, task_id):
     """
     查询异步任务状态，如果成功则返回 file_id，否则返回 None。
     """
-    url = f"https://api.minimaxi.chat/v1/query/t2a_async_query_v2?GroupId={group_id}&task_id={task_id}"
+    url = f"https://api.minimax.chat/v1/query/t2a_async_query_v2?GroupId={group_id}&task_id={task_id}"
     headers = {
         'Authorization': f'Bearer {api_key}',
         'Content-Type': 'application/json'
     }
-    max_retries = 100
+    max_retries = 100 #查询任务状态次数，5秒一次
     retry_count = 0
 
     while retry_count < max_retries:
@@ -144,7 +144,7 @@ def download_file(api_key, group_id, file_id, save_dir, txt_file_name):
     """
     下载生成的 TAR 文件，保存到本地。
     """
-    url = f'https://api.minimaxi.chat/v1/files/retrieve?GroupId={group_id}&file_id={file_id}'
+    url = f'https://api.minimax.chat/v1/files/retrieve?GroupId={group_id}&file_id={file_id}'
     headers = {
         'Authorization': f'Bearer {api_key}',
         'Content-Type': 'application/json'
@@ -159,7 +159,7 @@ def download_file(api_key, group_id, file_id, save_dir, txt_file_name):
     if response_data.get("base_resp", {}).get("status_code") == 0:
         file_info = response_data.get("file", {})
         download_url = file_info.get("download_url")
-        file_name = f"{txt_file_name}.tar"
+        file_name = f"{txt_file_name}.tar" # Use the original TXT file name for the tar
         if download_url:
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
@@ -189,33 +189,75 @@ def extract_and_rename(tar_path, extract_dir, new_dir_name):
     """
     try:
         with tarfile.open(tar_path, 'r') as tar_ref:
+            # Log contents before extracting
+            # print(f"Tar file contents for {tar_path}: {tar_ref.getnames()}")
             tar_ref.extractall(extract_dir)
     except Exception as e:
         print(f"解压失败: {e}")
+        # Attempt to clean up partially extracted directory if it exists
+        if os.path.isdir(os.path.join(extract_dir, new_dir_name)): # if rename happened before error
+             shutil.rmtree(os.path.join(extract_dir, new_dir_name), ignore_errors=True)
         return None
     print(f"文件已解压到: {extract_dir}")
 
-    # 寻找解压出来的目录
-    for item in os.listdir(extract_dir):
-        item_path = os.path.join(extract_dir, item)
-        if os.path.isdir(item_path):
-            new_path = os.path.join(extract_dir, new_dir_name)
-            try:
-                os.rename(item_path, new_path)
-            except Exception as e:
-                print(f"目录重命名失败: {e}")
-                return None
-            break
-    else:
-        print("未找到需要重命名的目录。")
+    extracted_items = os.listdir(extract_dir)
+    # Filter out the tar file itself if it was extracted into the same directory (should not happen with extractall)
+    extracted_dirs_or_files = [item for item in extracted_items if item != os.path.basename(tar_path)]
+
+    if not extracted_dirs_or_files:
+        print(f"解压后未在 {extract_dir} 中找到任何文件或目录。")
         return None
 
-    # 删除原 tar 文件
+    # Expecting a single directory inside, or files directly
+    # The API usually puts content in a directory named by task_id or similar
+    # We are trying to rename the *first found directory* to new_dir_name.
+    # If no directory, but files are present, this logic might need adjustment.
+    # For now, assume the API creates a single top-level directory inside the tar.
+    
+    renamed_path = None
+    for item in extracted_dirs_or_files:
+        item_path = os.path.join(extract_dir, item)
+        if os.path.isdir(item_path):
+            # This is the directory we want to rename
+            new_path_target = os.path.join(extract_dir, new_dir_name)
+            # Check if target new_dir_name already exists (e.g. from a previous failed attempt)
+            if os.path.exists(new_path_target):
+                print(f"目标目录 {new_path_target} 已存在，将尝试删除后重命名。")
+                try:
+                    shutil.rmtree(new_path_target)
+                except Exception as e_rm:
+                    print(f"删除已存在的目标目录 {new_path_target} 失败: {e_rm}")
+                    # Potentially return None or raise error, depending on desired robustness
+                    # For now, we'll let the os.rename fail if this occurs and isn't handled
+            
+            try:
+                os.rename(item_path, new_path_target)
+                renamed_path = new_path_target
+                print(f"解压出的目录 '{item}' 已重命名为 '{new_dir_name}' 位于 '{new_path_target}'")
+                break 
+            except Exception as e:
+                print(f"目录 {item_path} 重命名为 {new_path_target} 失败: {e}")
+                return None
+    
+    if not renamed_path: # No directory was found and renamed
+        # This could happen if the tar extracts files directly without a containing folder
+        # Or if multiple folders are extracted.
+        # For this application, we expect one folder to rename.
+        print(f"解压后未找到可重命名的单一目录。检查 {extract_dir} 内容: {extracted_dirs_or_files}")
+        # If files were extracted directly, we might want to create new_dir_name and move them
+        # For now, stick to the expectation of renaming one directory.
+        return None
+
+
+    # Delete the original tar file
     try:
         os.remove(tar_path)
+        print(f"已删除原始压缩文件: {tar_path}")
     except Exception as e:
         print(f"删除压缩文件失败: {e}")
-    return new_path
+    
+    return renamed_path # Return the path of the renamed directory
+
 
 def convert_seconds_to_srt_time(seconds):
     """
@@ -253,22 +295,35 @@ def json_to_srt(json_data, srt_path):
     except Exception as e:
         print(f"保存 SRT 文件失败: {e}")
 
-def process_tar_to_srt(tar_path, temp_dir, output_dir, txt_file_name):
+def process_tar_to_srt(tar_path, temp_extract_base_dir, final_output_base_dir, txt_file_name_for_output_folder):
     """
     解压 tar 文件并转换生成 SRT 文件。
-    - 解压至 temp_dir
-    - 将解压后的第一个目录重命名为 txt_file_name
+    - 解压至 temp_extract_base_dir/<txt_file_name_for_output_folder>_temp_extracted
+    - 将解压后的第一个目录重命名为 txt_file_name_for_output_folder (within the temp_extract_base_dir)
     - 查找 .titles 文件转换为 SRT
-    - 最后移动到 output_dir，并删除 temp_dir
+    - 最后将重命名后的文件夹移动到 final_output_base_dir/<txt_file_name_for_output_folder>，并删除整个 temp_extract_base_dir
     """
-    extracted_dir = extract_and_rename(tar_path, temp_dir, txt_file_name)
-    if not extracted_dir:
-        print("解压失败，无法处理 SRT 文件")
-        return
+    # Create a specific temporary directory for this file's extraction to avoid conflicts
+    # e.g., output_dir/file1_temp/file1_extracted_content/
+    # The tar itself is downloaded into output_dir/file1_temp/file1.tar
+    # extract_and_rename expects tar_path and an extract_dir.
+    # Let temp_extract_base_dir be where the .tar is (e.g. output_dir/txt_file_name_temp)
+    # And extract_dir for extract_and_rename be this same temp_extract_base_dir.
 
-    # 查找 .titles 文件
+    # The renamed folder will be at temp_extract_base_dir/txt_file_name_for_output_folder
+    renamed_extracted_content_dir = extract_and_rename(tar_path, temp_extract_base_dir, txt_file_name_for_output_folder)
+    
+    if not renamed_extracted_content_dir:
+        print(f"解压或重命名失败 {tar_path}，无法处理 SRT 文件")
+        # Clean up the temp_extract_base_dir if extraction failed midway
+        if os.path.exists(temp_extract_base_dir):
+            shutil.rmtree(temp_extract_base_dir, ignore_errors=True)
+        return None
+
+    # Now renamed_extracted_content_dir is like: .../txt_file_name_temp/txt_file_name
+    # Find .titles file within this renamed directory
     titles_file = None
-    for root, _, files in os.walk(extracted_dir):
+    for root, _, files in os.walk(renamed_extracted_content_dir):
         for file in files:
             if file.endswith(".titles"):
                 titles_file = os.path.join(root, file)
@@ -277,26 +332,56 @@ def process_tar_to_srt(tar_path, temp_dir, output_dir, txt_file_name):
             break
 
     if not titles_file:
-        print("未找到 .titles 文件")
+        print(f"在 {renamed_extracted_content_dir} 中未找到 .titles 文件")
     else:
         try:
             with open(titles_file, 'r', encoding='utf-8') as f:
                 json_data = json.load(f)
-            srt_path = os.path.join(extracted_dir, f"{txt_file_name}.srt")
+            # Save SRT in the same renamed_extracted_content_dir
+            srt_path = os.path.join(renamed_extracted_content_dir, f"{txt_file_name_for_output_folder}.srt")
             json_to_srt(json_data, srt_path)
         except Exception as e:
-            print(f"读取 .titles 文件失败: {e}")
+            print(f"读取 .titles 文件或生成SRT失败: {e}")
 
-    final_dir = os.path.join(output_dir, txt_file_name)
-    if os.path.exists(final_dir):
-        final_dir = os.path.join(output_dir, txt_file_name + "_1")
+    # Move the processed folder (renamed_extracted_content_dir) to its final destination
+    # Final destination: final_output_base_dir/txt_file_name_for_output_folder
+    final_target_dir_path = os.path.join(final_output_base_dir, txt_file_name_for_output_folder)
 
-    shutil.move(extracted_dir, final_dir)
-    shutil.rmtree(temp_dir)
+    # Handle cases where the final target directory might already exist (e.g., from a re-run)
+    if os.path.exists(final_target_dir_path):
+        print(f"最终目标目录 {final_target_dir_path} 已存在。正在尝试覆盖...")
+        try:
+            shutil.rmtree(final_target_dir_path) # Remove existing to avoid move issues
+        except Exception as e_rm_final:
+            print(f"删除已存在的最终目录 {final_target_dir_path} 失败: {e_rm_final}。跳过移动。")
+            # Clean up temp_extract_base_dir and return
+            if os.path.exists(temp_extract_base_dir):
+                shutil.rmtree(temp_extract_base_dir, ignore_errors=True)
+            return None # Indicate failure
 
-    return final_dir
+    try:
+        shutil.move(renamed_extracted_content_dir, final_target_dir_path)
+        print(f"处理完成的文件夹已移动到: {final_target_dir_path}")
+    except Exception as e_move:
+        print(f"移动文件夹 {renamed_extracted_content_dir} 到 {final_target_dir_path} 失败: {e_move}")
+        # Clean up temp_extract_base_dir and return
+        if os.path.exists(temp_extract_base_dir):
+             shutil.rmtree(temp_extract_base_dir, ignore_errors=True)
+        return None # Indicate failure
 
-def process_txt_file(txt_path, api_key, group_id, model, output_dir, voice_id, speed, vol, pitch, task_num):
+    # Clean up the parent temporary directory (e.g., output_dir/txt_file_name_temp)
+    # This directory originally contained the .tar and the renamed_extracted_content_dir before it was moved.
+    if os.path.exists(temp_extract_base_dir):
+        try:
+            shutil.rmtree(temp_extract_base_dir)
+            print(f"已清理临时文件夹: {temp_extract_base_dir}")
+        except Exception as e_clean:
+            print(f"清理临时文件夹 {temp_extract_base_dir} 失败: {e_clean}")
+            
+    return final_target_dir_path
+
+
+def process_txt_file(txt_path, output_dir, api_key, group_id, model, voice_id, speed, vol, pitch, task_num):
     """
     处理单个 TXT 文件的逻辑：
     1. 读取文本
@@ -304,87 +389,121 @@ def process_txt_file(txt_path, api_key, group_id, model, output_dir, voice_id, s
     3. 查询任务状态
     4. 下载 tar 文件并解压
     5. 生成 SRT
+    output_dir is the main directory where all final processed folders will be created.
+    A temporary sub-directory will be created inside output_dir for each TXT file.
     """
-    # 设置线程标识，供日志前缀使用
     threading.current_thread().task_id = task_num
 
-    txt_file_name = os.path.splitext(os.path.basename(txt_path))[0]
+    txt_file_name_no_ext = os.path.splitext(os.path.basename(txt_path))[0]
+    print(f"任务[{task_num}] 开始处理文件: {txt_path}")
     text = read_text_from_file(txt_path)
     if not text:
-        print(f"任务[{task_num}] 无法读取文本文件: {txt_path}")
+        print(f"任务[{task_num}] 无法读取文本文件: {txt_path}，跳过。")
         return
 
-    # 创建任务
     task_id_created = create_speech_task(api_key, group_id, model, text=text, 
                                          voice_id=voice_id, speed=speed, vol=vol, pitch=pitch)
     if not task_id_created:
-        print(f"任务[{task_num}] 文件 {txt_path} 创建任务失败，跳过。")
+        print(f"任务[{task_num}] 文件 {txt_file_name_no_ext} 创建任务失败，跳过。")
         return
 
-    # 查询任务状态
     file_id = get_task_status(api_key, group_id, task_id_created)
     if not file_id:
-        print(f"任务[{task_num}] 文件 {txt_path} 未获取到 file_id，跳过。")
+        print(f"任务[{task_num}] 文件 {txt_file_name_no_ext} 未获取到 file_id，跳过。")
         return
 
-    # 下载与解压
-    temp_dir = os.path.join(output_dir, txt_file_name + "_temp")
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir)
-
-    tar_file_path = download_file(api_key, group_id, file_id, temp_dir, txt_file_name)
-    if not tar_file_path:
-        print(f"任务[{task_num}] 文件 {txt_path} 下载 tar 失败，跳过。")
+    # Create a specific temporary directory for this file's processing, inside the main output_dir
+    # e.g. output_dir/MyTextFile_temp/
+    # The tar file will be downloaded here.
+    # The extraction will happen within this temp_processing_dir.
+    # The final processed folder will be output_dir/MyTextFile/
+    temp_processing_dir_for_file = os.path.join(output_dir, f"{txt_file_name_no_ext}_temp_processing_files")
+    if os.path.exists(temp_processing_dir_for_file):
+        shutil.rmtree(temp_processing_dir_for_file, ignore_errors=True) # Clean up from previous runs
+    try:
+        os.makedirs(temp_processing_dir_for_file, exist_ok=True)
+    except Exception as e:
+        print(f"任务[{task_num}] 创建临时目录 {temp_processing_dir_for_file} 失败: {e}，跳过。")
         return
 
-    process_tar_to_srt(tar_file_path, temp_dir, output_dir, txt_file_name)
-    print(f"任务[{task_num}] 文件 {txt_path} 处理完成。")
 
-    # 最后尝试移除任务标识
+    # Download tar to this specific temp directory
+    # txt_file_name_no_ext is used for naming the downloaded .tar file
+    downloaded_tar_path = download_file(api_key, group_id, file_id, temp_processing_dir_for_file, txt_file_name_no_ext)
+    if not downloaded_tar_path:
+        print(f"任务[{task_num}] 文件 {txt_file_name_no_ext} 下载 tar 失败，跳过。")
+        if os.path.exists(temp_processing_dir_for_file): # Clean up
+            shutil.rmtree(temp_processing_dir_for_file, ignore_errors=True)
+        return
+
+    # Process tar: extract, rename, convert to SRT, move to final location, and clean up temp_processing_dir_for_file
+    # temp_processing_dir_for_file is where tar is, and where extraction initially happens.
+    # output_dir is the base for final processed folders.
+    # txt_file_name_no_ext is used for the name of the final output folder.
+    final_folder_path = process_tar_to_srt(downloaded_tar_path, 
+                                           temp_processing_dir_for_file, 
+                                           output_dir, 
+                                           txt_file_name_no_ext)
+    
+    if final_folder_path:
+        print(f"任务[{task_num}] 文件 {txt_file_name_no_ext} 处理完成。输出位于: {final_folder_path}")
+    else:
+        print(f"任务[{task_num}] 文件 {txt_file_name_no_ext} 处理过程中发生错误，未能生成最终输出。")
+        # temp_processing_dir_for_file should have been cleaned by process_tar_to_srt on failure
+
     try:
         delattr(threading.current_thread(), "task_id")
-    except Exception:
+    except AttributeError: # Can happen if already deleted or never set
         pass
+    except Exception as e: # Catch any other deletion error
+        print(f"任务[{task_num}] 清理线程任务ID时出错: {e}")
 
-def process_all_txt_files(base_dir, group_id, api_key, model,
-                          max_workers, speed, vol, pitch, voice_id):
+
+def process_list_of_txt_files(txt_file_paths, output_dir, group_id, api_key, model,
+                               max_workers, speed, vol, pitch, voice_id):
     """
-    多线程方式处理所有 TXT 文件。
+    多线程方式处理提供的 TXT 文件列表。
+    txt_file_paths: 包含待处理TXT文件完整路径的列表。
+    output_dir: 所有处理结果的总输出目录。
     """
-    tasks = [os.path.join(base_dir, f) 
-             for f in os.listdir(base_dir) if f.lower().endswith(".txt")]
-    if not tasks:
-        print("未找到TXT文件。")
+    if not txt_file_paths:
+        print("未提供TXT文件进行处理。")
         return
 
-    print(f"开始处理文件夹: {base_dir}")
-
-    # 创建线程池
+    print(f"准备处理 {len(txt_file_paths)} 个TXT文件。输出将保存到目录: {output_dir}")
+    if not os.path.exists(output_dir):
+        try:
+            os.makedirs(output_dir)
+            print(f"已创建输出目录: {output_dir}")
+        except Exception as e:
+            print(f"创建输出目录 {output_dir} 失败: {e}。请检查权限或路径。")
+            return
+    
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {}
-        for i, task in enumerate(tasks, start=1):
+        for i, txt_full_path in enumerate(txt_file_paths, start=1):
             future = executor.submit(
                 process_txt_file, 
-                task, 
+                txt_full_path,         # Full path to the TXT file
+                output_dir,            # Main output directory
                 api_key, 
                 group_id, 
                 model, 
-                base_dir, 
                 voice_id, 
                 speed, 
                 vol, 
                 pitch, 
-                i
+                i                      # Task number for logging
             )
-            futures[future] = task
+            futures[future] = os.path.basename(txt_full_path) # Store basename for error reporting
 
-        # 等待所有任务完成
         for future in futures:
-            task_file = futures[future]
+            task_file_basename = futures[future]
             try:
-                future.result()
+                future.result() # Wait for task to complete and retrieve result (or raise exception)
             except Exception as e:
-                print(f"处理文件 {task_file} 时发生错误: {e}")
+                # The error should ideally be caught and logged within process_txt_file
+                # This is a fallback for unexpected errors from the future itself
+                print(f"处理文件 {task_file_basename} 时线程池捕获到错误: {e}")
 
-    print("所有任务处理完成。")
+    print(f"所有 {len(txt_file_paths)} 个选定文件的处理尝试已完成。")
