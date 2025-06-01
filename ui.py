@@ -233,7 +233,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MiniMax超长文本语音生成")
-        self.setMinimumSize(600, 500) 
+        self.setMinimumSize(600, 700) 
   
         self.all_voices_data = []
         self.languages = []
@@ -299,27 +299,35 @@ class MainWindow(QMainWindow):
         tab1_layout.setContentsMargins(5, 10, 5, 5)
 
         file_selection_group = QGroupBox("文件选择与管理")
-        file_selection_group_layout = QVBoxLayout()
-        
+        file_selection_group_layout = QVBoxLayout() # This is the main layout for the groupbox
+
+        # Create a QHBoxLayout for the buttons
+        buttons_layout = QHBoxLayout()
+
         self.add_files_button.clicked.connect(self.add_txt_files_to_list)
-        add_files_layout = QHBoxLayout()
-        add_files_layout.addWidget(self.add_files_button)
-        add_files_layout.addStretch()
-        file_selection_group_layout.addLayout(add_files_layout)
+        buttons_layout.addWidget(self.add_files_button) # Add the "Add files" button
+
+        self.delete_file_button.clicked.connect(self.delete_selected_files_from_list)
+        buttons_layout.addWidget(self.delete_file_button) # Add the "Delete file" button
+
+        buttons_layout.addStretch() # Add stretch to push buttons to the left
+        
+        # Add the buttons_layout to the groupbox's main layout
+        file_selection_group_layout.addLayout(buttons_layout)
 
         file_selection_group_layout.addWidget(QLabel("待处理 TXT 文件列表 (可多选删除, 单击可修改下方参数):"))
         self.file_list_widget.setMinimumHeight(100)
         self.file_list_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.MinimumExpanding)
         self.file_list_widget.setSelectionMode(QListWidget.ExtendedSelection)
         self.file_list_widget.keyPressEvent = self.handle_file_list_key_press
-        self.file_list_widget.currentItemChanged.connect(self.on_file_selection_changed) # Connect selection change
+        self.file_list_widget.currentItemChanged.connect(self.on_file_selection_changed)
         file_selection_group_layout.addWidget(self.file_list_widget)
 
-        self.delete_file_button.clicked.connect(self.delete_selected_files_from_list)
-        delete_button_layout = QHBoxLayout()
-        delete_button_layout.addStretch()
-        delete_button_layout.addWidget(self.delete_file_button)
-        file_selection_group_layout.addLayout(delete_button_layout)
+        # The old delete_button_layout is no longer needed here as the button is moved.
+        # delete_button_layout = QHBoxLayout()
+        # delete_button_layout.addStretch()
+        # delete_button_layout.addWidget(self.delete_file_button)
+        # file_selection_group_layout.addLayout(delete_button_layout)
         
         file_selection_group.setLayout(file_selection_group_layout)
         tab1_layout.addWidget(file_selection_group)
