@@ -824,7 +824,7 @@ class MainWindow(QMainWindow):
 
     def load_voice_data(self):
         try:
-            json_file_path = get_path_in_exe_directory(MINIMAX_VOICES_JSON_PATH) # 修改后
+            json_file_path = MINIMAX_VOICES_JSON_PATH
             if not os.path.exists(json_file_path):
                 msg = f"错误: 音色配置文件 '{json_file_path}' 未找到。\n"
                 if hasattr(self, 'log_text_edit') and self.log_text_edit: self.log_message_received(msg, error=True)
